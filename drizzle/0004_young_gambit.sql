@@ -1,0 +1,2 @@
+ALTER TABLE "screening" ADD COLUMN "manual_adjustment" integer;--> statement-breakpoint
+ALTER TABLE "screening" ADD CONSTRAINT "manual_adjustment_range" CHECK ("screening"."manual_adjustment" between -100 and 100);

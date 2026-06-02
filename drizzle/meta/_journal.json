@@ -1,0 +1,48 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1780396213992,
+      "tag": "0000_unique_liz_osborn",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1780411384452,
+      "tag": "0001_left_kitty_pryde",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1780468526557,
+      "tag": "0002_cloudy_turbo",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1780472853299,
+      "tag": "0003_loud_shen",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1780474034084,
+      "tag": "0004_young_gambit",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1780476933197,
+      "tag": "0005_busy_joystick",
+      "breakpoints": true
+    }
+  ]
+}
