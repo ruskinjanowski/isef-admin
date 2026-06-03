@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Save } from "lucide-react";
 import { toast } from "sonner";
 
@@ -9,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { APPEARANCE_LEVELS } from "@/lib/screening/appearance";
 
 // Mirrors RACE_OPTIONS from src/lib/screening (kept local so the client bundle
 // doesn't pull in the server-only module).
@@ -38,6 +40,8 @@ export function ScreeningForm({
   candidateId: string;
   initial: Screening;
 }) {
+  const router = useRouter();
+
   // Form fields are strings (empty = unset); coerced server-side on save.
   const [appearance, setAppearance] = useState(
     initial.appearance?.toString() ?? "",
@@ -50,9 +54,24 @@ export function ScreeningForm({
   const [pending, setPending] = useState(false);
   const [savedAt, setSavedAt] = useState(initial.updatedAt);
 
+  // Snapshot of the last-persisted values, so we only refresh the router cache
+  // (which refetches server-rendered tiers) when the save actually changed data.
+  const [saved, setSaved] = useState({
+    appearance: initial.appearance?.toString() ?? "",
+    race: initial.race ?? "",
+    manualAdjustment: initial.manualAdjustment?.toString() ?? "",
+    notes: initial.notes ?? "",
+  });
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setPending(true);
+    const current = { appearance, race, manualAdjustment, notes };
+    const isDirty =
+      current.appearance !== saved.appearance ||
+      current.race !== saved.race ||
+      current.manualAdjustment !== saved.manualAdjustment ||
+      current.notes !== saved.notes;
     try {
       const res = await fetch(`/api/screening/${candidateId}`, {
         method: "PUT",
@@ -70,7 +89,13 @@ export function ScreeningForm({
         throw new Error(json.error ?? "Could not save screening.");
       }
       setSavedAt((json.screening as Screening).updatedAt);
+      setSaved(current);
       toast.success("Screening saved.");
+      // Only bust the cached tiers (list + this page) when something changed,
+      // so an unchanged re-save doesn't trigger a needless refetch.
+      if (isDirty) {
+        router.refresh();
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not save.");
     } finally {
@@ -94,18 +119,20 @@ export function ScreeningForm({
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
-              <Label htmlFor="appearance">Appearance score (1–10)</Label>
-              <Input
+              <Label htmlFor="appearance">Appearance</Label>
+              <Select
                 id="appearance"
-                type="number"
-                min={1}
-                max={10}
-                step={1}
                 value={appearance}
                 onChange={(e) => setAppearance(e.target.value)}
                 disabled={pending}
-                placeholder="—"
-              />
+              >
+                <option value="">—</option>
+                {APPEARANCE_LEVELS.map((level) => (
+                  <option key={level.value} value={level.value}>
+                    {level.label}
+                  </option>
+                ))}
+              </Select>
             </div>
             <div className="space-y-2">
               <Label htmlFor="race">Race</Label>

@@ -12,9 +12,13 @@ import type {
   CandidateFilters,
   CandidateListItem,
 } from "@/lib/candidates/query";
+import {
+  APPEARANCE_LEVELS,
+  APPEARANCE_MAX,
+  appearanceLabel,
+} from "@/lib/screening/appearance";
 
 const YEAR_THRESHOLDS = [0, 1, 2, 3, 5, 10, 15];
-const APPEARANCE_THRESHOLDS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 const selectClass =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50";
@@ -233,9 +237,12 @@ export function CandidatesTable({
           value={filters.minAppearance}
           onChange={(e) => navigate({ minAppearance: Number(e.target.value) })}
         >
-          {APPEARANCE_THRESHOLDS.map((a) => (
-            <option key={a} value={a}>
-              {a === 0 ? "Any appearance" : `Appearance ${a}+`}
+          <option value={0}>Any appearance</option>
+          {APPEARANCE_LEVELS.map((level) => (
+            <option key={level.value} value={level.value}>
+              {level.value === APPEARANCE_MAX
+                ? level.label
+                : `${level.label} or better`}
             </option>
           ))}
         </select>
@@ -289,7 +296,7 @@ export function CandidatesTable({
               <Th>Location</Th>
               <Th>Country pref.</Th>
               <Th>Race</Th>
-              <Th className="text-right">Appearance</Th>
+              <Th>Appearance</Th>
               <Th>Registered</Th>
               <Th>CV</Th>
             </tr>
@@ -298,11 +305,32 @@ export function CandidatesTable({
             {candidates.map((c) => (
               <tr
                 key={c.id}
-                onClick={() => router.push(`/candidates/${c.id}`)}
+                onClick={(e) => {
+                  // Honor the usual "new tab" gestures: cmd/ctrl-click opens in
+                  // a background tab, plain click navigates in place.
+                  if (e.metaKey || e.ctrlKey) {
+                    window.open(`/candidates/${c.id}`, "_blank");
+                  } else {
+                    router.push(`/candidates/${c.id}`);
+                  }
+                }}
+                onAuxClick={(e) => {
+                  // Middle-click → new tab.
+                  if (e.button === 1) {
+                    window.open(`/candidates/${c.id}`, "_blank");
+                  }
+                }}
                 className="cursor-pointer border-b last:border-0 hover:bg-muted/40"
               >
                 <td className="px-3 py-2">
-                  <div className="font-medium">{c.fullName || "—"}</div>
+                  {/* Real link so right-click → "Open in new tab" works. */}
+                  <Link
+                    href={`/candidates/${c.id}`}
+                    onClick={(e) => e.stopPropagation()}
+                    className="font-medium hover:underline"
+                  >
+                    {c.fullName || "—"}
+                  </Link>
                   <div className="text-xs text-muted-foreground">{c.email}</div>
                 </td>
                 <td className="px-3 py-2">
@@ -323,8 +351,8 @@ export function CandidatesTable({
                   {c.countries.length ? c.countries.join(", ") : "—"}
                 </td>
                 <td className="px-3 py-2 capitalize">{c.race || "—"}</td>
-                <td className="px-3 py-2 text-right tabular-nums">
-                  {c.appearance ?? "—"}
+                <td className="px-3 py-2">
+                  {appearanceLabel(c.appearance) ?? "—"}
                 </td>
                 <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">
                   {c.registeredAt || "—"}

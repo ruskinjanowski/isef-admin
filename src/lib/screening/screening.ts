@@ -7,6 +7,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { screening } from "@/db/schema";
 import { recalculateTierForCandidate } from "@/lib/tiering/recalculate";
+import { APPEARANCE_MAX, APPEARANCE_MIN } from "@/lib/screening/appearance";
 
 // Allowed race values for the screening dropdown. Stored as plain text in the
 // column; the app constrains the set so the API can't be fed anything off-list.
@@ -72,7 +73,8 @@ export async function getScreening(candidateId: string): Promise<Screening> {
 
 /**
  * Validate and clean raw input into a ScreeningInput, or return an error
- * message. Empty strings collapse to null; appearance must be an integer 1–10.
+ * message. Empty strings collapse to null; appearance must be an ordinal in the
+ * 1–5 range (the named levels in ./appearance).
  */
 export function parseScreeningInput(
   raw: unknown,
@@ -86,8 +88,16 @@ export function parseScreeningInput(
   const a = body.appearance;
   if (a !== null && a !== undefined && a !== "") {
     const n = typeof a === "string" ? Number(a) : a;
-    if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 10) {
-      return { ok: false, error: "Appearance must be a whole number from 1 to 10." };
+    if (
+      typeof n !== "number" ||
+      !Number.isInteger(n) ||
+      n < APPEARANCE_MIN ||
+      n > APPEARANCE_MAX
+    ) {
+      return {
+        ok: false,
+        error: `Appearance must be a level from ${APPEARANCE_MIN} to ${APPEARANCE_MAX}.`,
+      };
     }
     appearance = n;
   }

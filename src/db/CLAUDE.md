@@ -61,7 +61,8 @@ mirror/app-state split above.
 *(declared in `schema.ts`; logic in `src/lib/screening/`)*
 
 One row per candidate (unique FK), edited in place on the candidate detail page
-and upserted. Holds `appearance` (int 1–10, `CHECK`-constrained, nullable),
+and upserted. Holds `appearance` (ordinal int 1–5, `CHECK`-constrained,
+nullable; named levels Poor…Excellent live in `src/lib/screening/appearance.ts`),
 `race` (text), `notes` (text), plus `updated_by → users.id` and timestamps. Sync
 physically cannot touch it.
 

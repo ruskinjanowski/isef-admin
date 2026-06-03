@@ -124,7 +124,8 @@ export const screening = pgTable(
       .notNull()
       .unique()
       .references(() => candidates.id, { onDelete: "cascade" }),
-    // Appearance score, 1–10. Nullable: a candidate may be unscored.
+    // Appearance rating ordinal 1–5 (1 Poor … 5 Excellent); labels + tier
+    // points in src/lib/screening/appearance.ts. Nullable: may be unscored.
     appearance: integer("appearance"),
     race: text("race"),
     // Reasoning for the manual tier adjustment below (repurposed from generic
@@ -151,7 +152,7 @@ export const screening = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [
-    check("appearance_range", sql`${t.appearance} between 1 and 10`),
+    check("appearance_range", sql`${t.appearance} between 1 and 5`),
     check("tier_range", sql`${t.tier} between 1 and 3`),
     check(
       "manual_adjustment_range",

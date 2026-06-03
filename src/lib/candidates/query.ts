@@ -33,7 +33,7 @@ export type CandidateFilters = {
   maxAge: number;
   /** Screening race (app-state, joined from the `screening` table). */
   race: string;
-  /** Minimum screening appearance score 1–10 (app-state, joined). */
+  /** Minimum screening appearance ordinal 1–5 (app-state, joined). */
   minAppearance: number;
   /** Derived tier: "1" | "2" | "3" | "unranked" | "" (any). */
   tier: string;

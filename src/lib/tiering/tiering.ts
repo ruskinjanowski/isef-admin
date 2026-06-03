@@ -9,7 +9,9 @@
 // 4–5 years can still land Tier 1 even though the strict rule would say Tier 2.
 // That tradeoff is accepted; the breakdown page makes any such case visible.
 //
-// Every weight lives in WEIGHTS below — tune there, never in the logic. If a
+// Every weight lives in WEIGHTS below — tune there, never in the logic — except
+// the appearance scale, which lives in src/lib/screening/appearance.ts (shared
+// with the reviewer form so the levels and their points can't drift). If a
 // criterion ever needs to become a hard gate (cap the tier rather than add
 // points), do it where that component is added in computeTier.
 //
@@ -17,31 +19,32 @@
 // A candidate with no race recorded cannot be tiered → Unranked.
 
 import { COL, parseYears } from "@/lib/candidates/view";
+import { appearanceLabel, appearancePoints } from "@/lib/screening/appearance";
 
 // ─── Tunable model ───────────────────────────────────────────────────────────
 
 const WEIGHTS = {
-  // Appearance band → points. Appearance is the dominant tier signal. A blank
-  // score is treated as neutral (≈ a mid band) and flagged provisional rather
-  // than penalised — reviewers may tier on the rest of the profile.
-  appearance: { high: 50, mid: 28, low: 12, missing: 28 }, // 7–10 / 4–6 / 1–3 / blank
+  // Appearance scoring lives in src/lib/screening/appearance.ts (Excellent…Poor
+  // → points, capped at 30). It's one strong signal among several, deliberately
+  // not dominant; a blank rating counts neutrally (≈ Average) and is flagged
+  // provisional rather than penalised.
 
   // Experience points are race-group aware: the bar for the same points is
   // higher for non-white candidates, mirroring the stricter rule there.
   experience: {
-    white: { meets: 15, below: 3 }, //            ≥1yr   / 0yr
-    nonwhite: { high: 15, mid: 8, low: 4, below: 0 }, // ≥6 / 4–5 / 2–3 / <2
+    white: { meets: 22, below: 4 }, //            ≥1yr   / 0yr
+    nonwhite: { high: 22, mid: 12, low: 6, below: 0 }, // ≥6 / 4–5 / 2–3 / <2
   },
 
   // Highest credential found across qualification + certification.
-  qualification: { degree: 25, diploma: 6, none: 0 },
+  qualification: { degree: 28, diploma: 8, none: 0 },
 
   age: { ok: 10, over: 0 }, // ≤45 / >45
 
   // "Outstanding" criteria — each a small, equal bump, with a combined cap so
   // they refine ranking without dominating. (Curriculum is intentionally absent
   // for v1: there is no structured field to read it from.)
-  bonus: { each: 4, cap: 10 },
+  bonus: { each: 4, cap: 12 },
 
   ageCutoff: 45,
 } as const;
@@ -77,7 +80,7 @@ export type Tier = 1 | 2 | 3 | null;
 export type TierInputs = {
   /** Screening race (white / coloured / indian / black / other), or null. */
   race: string | null;
-  /** Screening appearance 1–10, or null if unscored. */
+  /** Screening appearance ordinal 1–5 (1 Poor … 5 Excellent), or null. */
   appearance: number | null;
   /** Years of experience, already parsed, or null. */
   years: number | null;
@@ -159,14 +162,6 @@ export function hasNationalityBoost(nationality: string): boolean {
 
 // ─── The engine ──────────────────────────────────────────────────────────────
 
-/** Band 7–10 / 4–6 / 1–3 → "high" / "mid" / "low"; null → "missing". */
-function appearanceBand(a: number | null): "high" | "mid" | "low" | "missing" {
-  if (a == null) return "missing";
-  if (a >= 7) return "high";
-  if (a >= 4) return "mid";
-  return "low";
-}
-
 /** Score one candidate into a tier, with a full breakdown. */
 export function computeTier(inputs: TierInputs): TierResult {
   const group = raceGroup(inputs.race);
@@ -183,18 +178,15 @@ export function computeTier(inputs: TierInputs): TierResult {
   const lines: BreakdownLine[] = [];
   const flags: string[] = [];
 
-  // 1. Appearance (dominant signal).
-  const band = appearanceBand(inputs.appearance);
+  // 1. Appearance (one strong signal among several — see screening/appearance).
+  const appLabel = appearanceLabel(inputs.appearance);
   lines.push({
     label: "Appearance",
-    detail:
-      band === "missing"
-        ? "no score yet — counted neutrally"
-        : `${inputs.appearance}/10 (band ${band === "high" ? "7–10" : band === "mid" ? "4–6" : "1–3"})`,
-    points: WEIGHTS.appearance[band],
+    detail: appLabel == null ? "no rating yet — counted neutrally" : appLabel,
+    points: appearancePoints(inputs.appearance),
   });
-  if (band === "missing") {
-    flags.push("No appearance score — tier is provisional.");
+  if (appLabel == null) {
+    flags.push("No appearance rating — tier is provisional.");
   }
 
   // 2. Experience (race-group aware).

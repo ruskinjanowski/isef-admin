@@ -43,6 +43,13 @@
       "when": 1780476933197,
       "tag": "0005_busy_joystick",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1780489723227,
+      "tag": "0006_massive_onslaught",
+      "breakpoints": true
     }
   ]
 }
