@@ -274,10 +274,10 @@ export function CandidatesTable({
       </div>
 
       {/* Table */}
-      <div className="overflow-x-auto rounded-lg border">
-        <table className="w-full text-sm">
+      <div className="max-h-[70vh] overflow-auto rounded-lg border">
+        <table className="w-full border-separate border-spacing-0 text-sm">
           <thead>
-            <tr className="border-b bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+            <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground">
               <Th>Name</Th>
               <Th>Tier</Th>
               <Th>Nationality</Th>
@@ -400,7 +400,13 @@ function Th({
   children: React.ReactNode;
   className?: string;
 }) {
-  return <th className={`px-3 py-2 font-medium ${className}`}>{children}</th>;
+  return (
+    <th
+      className={`sticky top-0 z-10 border-b bg-muted px-3 py-2 font-medium ${className}`}
+    >
+      {children}
+    </th>
+  );
 }
 
 /** Just the tier number, linking to the breakdown. Dash when unranked. */
