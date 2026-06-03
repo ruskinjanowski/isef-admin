@@ -16,6 +16,7 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { SignOutButton } from "@/components/sign-out-button";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { NAV_ITEMS, isActive } from "./nav";
 
 export function AppSidebar({
@@ -83,6 +84,7 @@ export function AppSidebar({
           <span className="truncate px-1 text-xs text-muted-foreground">
             {displayName}
           </span>
+          <ThemeToggle />
           <SignOutButton />
         </div>
       </SidebarFooter>
