@@ -160,3 +160,54 @@ export const screening = pgTable(
     ),
   ],
 );
+
+// ─── WhatsApp messages (app-state) ───────────────────────────────────────────
+//
+// The outbound (and later inbound) message log — the core of WhatsApp Phase 1.
+// App-only state, so it lives in its OWN table keyed to candidates.id (never
+// columns on the mirror — see src/db/CLAUDE.md). Sync physically cannot touch it.
+//
+// Phase 1 logs directly against the candidate (no wa_conversations thread table
+// yet — that arrives with inbound/threading in Phase 2). Both phases share THIS
+// table so later work is additive. See src/lib/whatsapp/CLAUDE.md.
+
+export const waMessages = pgTable(
+  "wa_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    candidateId: uuid("candidate_id")
+      .notNull()
+      .references(() => candidates.id, { onDelete: "cascade" }),
+    // 'out' = business-initiated (Phase 1); 'in' = candidate reply (Phase 2).
+    direction: text("direction").notNull(),
+    // 'template' = pre-approved template send (the only Phase 1 path — first
+    // contact is out-of-window so it MUST be a template); 'text' = free-form,
+    // only valid inside the 24h window (Phase 2).
+    type: text("type").notNull(),
+    // The approved template's name (null for free-form text). The variable
+    // mapping lives in src/lib/whatsapp/templates.ts, not here.
+    templateName: text("template_name"),
+    // The rendered message body we sent/received, for display in the log.
+    body: text("body"),
+    // Meta's wa_message_id — the correlation key for delivery-status webhooks
+    // (Phase 2). Null until Meta accepts the send; unique when present.
+    waMessageId: text("wa_message_id").unique(),
+    // Lifecycle: 'queued' before we hand off to Meta, 'sent' once accepted,
+    // 'delivered'/'read' from status webhooks (Phase 2), 'failed' on error.
+    status: text("status").notNull().default("queued"),
+    // Meta error detail when status = 'failed' (e.g. invalid number, opt-out).
+    error: text("error"),
+    // Reviewer who triggered the send. Null = system/bot (Phase 2 auto-replies).
+    sentBy: uuid("sent_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    check("wa_direction", sql`${t.direction} in ('in', 'out')`),
+    check("wa_type", sql`${t.type} in ('template', 'text')`),
+    check(
+      "wa_status",
+      sql`${t.status} in ('queued', 'sent', 'delivered', 'read', 'failed')`,
+    ),
+  ],
+);

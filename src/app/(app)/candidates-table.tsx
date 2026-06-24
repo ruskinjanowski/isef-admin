@@ -1,9 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ChevronLeft, ChevronRight, FileText, Search, X } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  FileText,
+  Loader2,
+  Search,
+  Send,
+  X,
+} from "lucide-react";
+import { toast } from "sonner";
 
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -31,6 +40,7 @@ export function CandidatesTable({
   pageCount,
   total,
   pageSize,
+  templates,
 }: {
   candidates: CandidateListItem[];
   options: FilterOptions;
@@ -39,6 +49,8 @@ export function CandidatesTable({
   pageCount: number;
   total: number;
   pageSize: number;
+  /** WhatsApp templates available to send (key + display label). */
+  templates: { key: string; label: string }[];
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -103,6 +115,82 @@ export function CandidatesTable({
 
   const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const end = start === 0 ? 0 : start + candidates.length - 1;
+
+  // ── Selection + WhatsApp send ───────────────────────────────────────────────
+  // Selection is by candidate id and lives in client state, so it PERSISTS as
+  // you page/filter (paging is a soft navigation that re-renders the server
+  // page without remounting this component). "Select all" only ever touches the
+  // current page's rows; the running total can span pages.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [templateKey, setTemplateKey] = useState(templates[0]?.key ?? "");
+  const [confirming, setConfirming] = useState(false);
+  const [sending, setSending] = useState(false);
+
+  const pageIds = useMemo(() => candidates.map((c) => c.id), [candidates]);
+  const allPageSelected =
+    pageIds.length > 0 && pageIds.every((id) => selected.has(id));
+
+  const toggleOne = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const toggleAllPage = () =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allPageSelected) pageIds.forEach((id) => next.delete(id));
+      else pageIds.forEach((id) => next.add(id));
+      return next;
+    });
+
+  const clearSelection = () => {
+    setSelected(new Set());
+    setConfirming(false);
+  };
+
+  const selectedTemplate = templates.find((t) => t.key === templateKey);
+
+  async function handleSend() {
+    setSending(true);
+    try {
+      const res = await fetch("/api/whatsapp/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          candidateIds: [...selected],
+          templateKey,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Could not send messages.");
+
+      const { sent, failed } = json as {
+        sent: number;
+        failed: number;
+        outcomes: { candidateName: string; status: string; error?: string }[];
+      };
+      if (failed > 0) {
+        const reasons = (json.outcomes as { status: string; candidateName: string; error?: string }[])
+          .filter((o) => o.status === "failed")
+          .slice(0, 3)
+          .map((o) => `${o.candidateName}: ${o.error ?? "failed"}`)
+          .join("\n");
+        toast.warning(`Sent ${sent}, ${failed} failed.`, {
+          description: reasons,
+        });
+      } else {
+        toast.success(`Sent to ${sent} candidate${sent === 1 ? "" : "s"}.`);
+      }
+      clearSelection();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not send.");
+    } finally {
+      setSending(false);
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -280,11 +368,90 @@ export function CandidatesTable({
         )}
       </div>
 
+      {/* Send bar — appears once anything is selected */}
+      {selected.size > 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-muted/40 p-3">
+          <span className="text-sm font-medium">
+            {selected.size.toLocaleString("en-US")} selected
+          </span>
+          {!confirming ? (
+            <>
+              <div className="w-64">
+                <select
+                  className={selectClass}
+                  value={templateKey}
+                  onChange={(e) => setTemplateKey(e.target.value)}
+                  disabled={sending}
+                >
+                  {templates.length === 0 && (
+                    <option value="">No templates available</option>
+                  )}
+                  {templates.map((t) => (
+                    <option key={t.key} value={t.key}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => setConfirming(true)}
+                disabled={!templateKey || sending}
+              >
+                <Send className="size-4" />
+                Send WhatsApp
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearSelection}
+                disabled={sending}
+              >
+                Clear
+              </Button>
+            </>
+          ) : (
+            <>
+              <span className="text-sm text-muted-foreground">
+                Send “{selectedTemplate?.label}” to{" "}
+                {selected.size.toLocaleString("en-US")} candidate
+                {selected.size === 1 ? "" : "s"}? This can’t be undone.
+              </span>
+              <Button size="sm" onClick={handleSend} disabled={sending}>
+                {sending ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Send className="size-4" />
+                )}
+                {sending ? "Sending…" : "Confirm send"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setConfirming(false)}
+                disabled={sending}
+              >
+                Cancel
+              </Button>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Table */}
       <div className="max-h-[70vh] overflow-auto rounded-lg border">
         <table className="w-full border-separate border-spacing-0 text-sm">
           <thead>
             <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground">
+              <th className="sticky top-0 z-10 w-10 border-b bg-muted px-3 py-2">
+                <input
+                  type="checkbox"
+                  aria-label="Select all candidates on this page"
+                  checked={allPageSelected}
+                  onChange={toggleAllPage}
+                  className="size-4 cursor-pointer accent-primary align-middle"
+                />
+              </th>
               <Th>Name</Th>
               <Th>Tier</Th>
               <Th>Nationality</Th>
@@ -322,6 +489,18 @@ export function CandidatesTable({
                 }}
                 className="cursor-pointer border-b last:border-0 hover:bg-muted/40"
               >
+                <td
+                  className="px-3 py-2"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <input
+                    type="checkbox"
+                    aria-label={`Select ${c.fullName || c.email}`}
+                    checked={selected.has(c.id)}
+                    onChange={() => toggleOne(c.id)}
+                    className="size-4 cursor-pointer accent-primary align-middle"
+                  />
+                </td>
                 <td className="px-3 py-2">
                   {/* Real link so right-click → "Open in new tab" works. */}
                   <Link
@@ -378,7 +557,7 @@ export function CandidatesTable({
             {candidates.length === 0 && (
               <tr>
                 <td
-                  colSpan={14}
+                  colSpan={15}
                   className="px-3 py-10 text-center text-muted-foreground"
                 >
                   No candidates match these filters.

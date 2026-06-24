@@ -5,6 +5,7 @@ import {
   queryFilterOptions,
   type CandidateFilters,
 } from "@/lib/candidates/query";
+import { WA_TEMPLATES } from "@/lib/whatsapp/templates";
 import { CandidatesTable } from "./candidates-table";
 
 type SearchParams = Record<string, string | string[] | undefined>;
@@ -58,6 +59,7 @@ export default async function CandidatesPage({
           pageCount={pageCount}
           total={total}
           pageSize={PAGE_SIZE}
+          templates={WA_TEMPLATES.map((t) => ({ key: t.key, label: t.label }))}
         />
       </div>
     </main>
