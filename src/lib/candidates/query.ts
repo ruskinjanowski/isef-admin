@@ -14,6 +14,7 @@ import { candidates, screening } from "@/db/schema";
 import { RACE_OPTIONS } from "@/lib/screening/screening";
 import {
   COL,
+  GRADE_BANDS,
   buildFilterOptions,
   splitCountries,
   toCandidateView,
@@ -27,6 +28,8 @@ export type CandidateFilters = {
   nationality: string;
   qualification: string;
   country: string;
+  /** Grade band taught (one of GRADE_BANDS), matched against the multi-select cell. */
+  grade: string;
   minYears: number;
   gender: string;
   minAge: number;
@@ -45,6 +48,7 @@ export const EMPTY_FILTERS: CandidateFilters = {
   nationality: "",
   qualification: "",
   country: "",
+  grade: "",
   minYears: 0,
   gender: "",
   minAge: 0,
@@ -94,6 +98,15 @@ function buildWhere(f: CandidateFilters): SQL | undefined {
       sql`exists (select 1 from unnest(string_to_array(${cell(
         COL.countries,
       )}, ',')) as token where btrim(token) = ${f.country})`,
+    );
+  }
+  if (f.grade) {
+    // The cell is a "Grade 6 to Grade 8, Grade 9 to Grade 12" multi-select; match
+    // one trimmed band exactly (same shape as the country combo above).
+    conds.push(
+      sql`exists (select 1 from unnest(string_to_array(${cell(
+        COL.grades,
+      )}, ',')) as token where btrim(token) = ${f.grade})`,
     );
   }
   if (f.minYears > 0) {
@@ -208,5 +221,7 @@ export async function queryFilterOptions(): Promise<FilterOptions> {
     ),
     // race is a fixed screening set, not derived from the mirror data.
     races: RACE_OPTIONS,
+    // grades is the form's fixed multi-select band list (see GRADE_BANDS).
+    grades: GRADE_BANDS,
   };
 }

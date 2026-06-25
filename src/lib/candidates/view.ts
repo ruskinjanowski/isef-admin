@@ -28,6 +28,21 @@ export const COL = {
   photoUrl: "Professional Photo",
 } as const;
 
+/**
+ * The fixed set of grade bands the form offers as a multi-select (the `grades`
+ * cell is a comma-joined subset of these, e.g. "Grade 6 to Grade 8, Grade 9 to
+ * Grade 12"). Not derived from the data — it's a closed checkbox list, so we
+ * pin it here in natural school order (youngest → oldest) for a stable filter
+ * dropdown. New form options, if ever added, must be appended here.
+ */
+export const GRADE_BANDS = [
+  "ECD to Pre-Kindergarten",
+  "Kindergarten to Grade 2",
+  "Grade 3 to Grade 5",
+  "Grade 6 to Grade 8",
+  "Grade 9 to Grade 12",
+] as const;
+
 export type CandidateView = {
   id: string;
   fullName: string;
@@ -127,6 +142,8 @@ export type FilterOptions = {
   genders: string[];
   /** Allowed screening race values (a fixed set, not derived from the data). */
   races: readonly string[];
+  /** Grade bands the form offers (a fixed set — see {@link GRADE_BANDS}). */
+  grades: readonly string[];
 };
 
 /** The fields {@link buildFilterOptions} reads — a subset of {@link CandidateView}. */
@@ -137,12 +154,12 @@ type FilterSource = Pick<
 
 /**
  * Distinct dropdown values derived from the candidate mirror, each sorted
- * most-common first. The `races` option is a fixed screening set, not derived
- * here — the caller adds it (see {@link queryFilterOptions}).
+ * most-common first. The `races` and `grades` options are fixed sets, not
+ * derived here — the caller adds them (see {@link queryFilterOptions}).
  */
 export function buildFilterOptions(
   views: FilterSource[],
-): Omit<FilterOptions, "races"> {
+): Omit<FilterOptions, "races" | "grades"> {
   const byFrequency = (values: Iterable<string>) => {
     const counts = new Map<string, number>();
     for (const v of values) {

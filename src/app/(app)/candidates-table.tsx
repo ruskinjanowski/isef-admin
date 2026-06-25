@@ -98,6 +98,7 @@ export function CandidatesTable({
     filters.nationality !== "" ||
     filters.qualification !== "" ||
     filters.country !== "" ||
+    filters.grade !== "" ||
     filters.minYears > 0 ||
     filters.gender !== "" ||
     filters.minAge > 0 ||
@@ -240,6 +241,19 @@ export function CandidatesTable({
           {options.countries.map((c) => (
             <option key={c} value={c}>
               {c}
+            </option>
+          ))}
+        </select>
+
+        <select
+          className={selectClass}
+          value={filters.grade}
+          onChange={(e) => navigate({ grade: e.target.value })}
+        >
+          <option value="">Any grade taught</option>
+          {options.grades.map((g) => (
+            <option key={g} value={g}>
+              {g}
             </option>
           ))}
         </select>

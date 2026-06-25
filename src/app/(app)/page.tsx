@@ -24,6 +24,7 @@ export default async function CandidatesPage({
     nationality: str("nationality"),
     qualification: str("qualification"),
     country: str("country"),
+    grade: str("grade"),
     minYears: Number(str("minYears")) || 0,
     gender: str("gender"),
     minAge: Number(str("minAge")) || 0,
