@@ -90,17 +90,25 @@ Meta API calls, signing, or message-shaping logic in UI/route files.
 ```
 src/lib/whatsapp/
   client.ts      # Low-level Meta Cloud API client: auth, POST to /messages,
-                 #   send a template, send free-form text (phase 2). No DB, no app
+                 #   sendTemplate + sendText (free-form, phase 2). No DB, no app
                  #   logic — just the HTTP boundary. Returns Meta's wa_message_id.
   templates.ts   # Registry of our approved templates (name, language, variable
                  #   mapping). Single source of truth for what we can send.
-  messages.ts    # Domain operations: sendWelcome(candidate), logMessage(...),
-                 #   status updates. Orchestrates client + DB. This is what the UI
-                 #   bridge calls — never client.ts directly.
-  webhook.ts     # (phase 2) Inbound parse + X-Hub signature verification.
+  messages.ts    # Outbound domain ops: sendTemplateToCandidates, listRecentMessages.
+                 #   Orchestrates client + DB. The UI bridge calls this, not client.ts.
+  webhook.ts     # (phase 2) HTTP boundary for inbound: GET subscription verify,
+                 #   X-Hub-Signature-256 check, parse Meta payload → InboundTextMessage.
+  inbound.ts     # (phase 2) Inbound domain op: upsert conversation, dedupe, log,
+                 #   call the bot (src/lib/bot), send + log the reply. Called from
+                 #   the webhook route's after() hook. Never touches the HTTP boundary.
+  phone.ts       # Free-text "WhatsApp Number" cell → E.164 digits, flags ambiguous.
   types.ts       # Shared types (message direction, status, Meta payload shapes).
   CLAUDE.md      # this file
 ```
+
+The bot brain itself lives in `src/lib/bot/` (handbook-grounded reply or human
+handoff via Claude Opus 4.8) — see that dir and `src/lib/handbook/`. `inbound.ts`
+is the only caller; the webhook route is a thin bridge over webhook.ts + inbound.ts.
 
 - **`src/app/api/whatsapp/...`** — route handlers stay thin: parse/authorize the
   request, call `messages.ts`, return. (Webhook verify+receive lands here in
@@ -115,16 +123,22 @@ src/lib/whatsapp/
 Per `src/db/CLAUDE.md`, this is app state in its **own** tables, keyed to
 `candidates.id` (never columns on the `candidates` mirror, never the email):
 
-- **`wa_conversations`** — one per candidate thread. Fields anticipated:
-  `candidate_id` (FK → candidates.id), `wa_phone`, `mode` ('bot'|'human', phase 2),
-  `window_expires_at` (24h clock, phase 2), `assigned_to` (→ users.id, phase 2),
-  timestamps. *Phase 1 may defer this table and log against the candidate
-  directly; add it when inbound/threading arrives.*
-- **`wa_messages`** — the log (the core of phase 1): `candidate_id` (or
-  `conversation_id`) FK, `direction` ('in'|'out'), `body`, `type`
-  ('template'|'text'), `template_name`, `wa_message_id` (Meta's id, for status
-  correlation), `status` ('sent'|'delivered'|'read'|'failed'), `sent_by`
-  (→ users.id; null = bot), `created_at`.
+- **`wa_conversations`** (added in phase 2, `drizzle/0009_*`) — one inbound
+  thread per phone number. Keyed by `wa_phone` (E.164 digits, unique) — NOT
+  candidate_id — because an inbound can arrive from a number that matches no
+  candidate. `candidate_id` is a nullable best-effort link (populated later when
+  phone↔candidate matching lands with the DB-aware bot). `window_expires_at` +
+  `last_inbound_at` track the 24h customer-service window. The per-conversation
+  `mode` ('bot'|'human') and `assigned_to` toggle are deliberately NOT here yet —
+  the first cut is an auto-reply bot with a handoff line, not a shared inbox.
+- **`wa_messages`** — the shared log. Phase 1 outbound template sends key off
+  `candidate_id`; phase 2 inbound + bot replies key off `conversation_id` (and
+  carry a null `candidate_id`). Both columns are now nullable (`0009_*` dropped
+  the `candidate_id` NOT NULL and added `conversation_id` FK → wa_conversations);
+  every row has at least one of the two. Other fields: `direction` ('in'|'out'),
+  `body`, `type` ('template'|'text'), `template_name`, `wa_message_id` (Meta's id,
+  unique — also the inbound dedupe key), `status`, `error`, `sent_by`
+  (→ users.id; null = bot), timestamps.
 
 Follow the schema-change workflow in `src/db/CLAUDE.md` (edit `schema.ts` →
 `db:generate` → review SQL → `db:migrate`).
@@ -135,9 +149,14 @@ Follow the schema-change workflow in `src/db/CLAUDE.md` (edit `schema.ts` →
 WHATSAPP_PHONE_NUMBER_ID=      # from Meta app — the sender number's id
 WHATSAPP_BUSINESS_ACCOUNT_ID=  # WABA id — used to manage/submit templates
 WHATSAPP_ACCESS_TOKEN=         # permanent access token for the Cloud API
-WHATSAPP_WEBHOOK_VERIFY_TOKEN= # (phase 2) our chosen token for webhook GET verify (pre-generated)
-WHATSAPP_APP_SECRET=           # (phase 2) for X-Hub-Signature verification
+WHATSAPP_WEBHOOK_VERIFY_TOKEN= # (phase 2) token echoed on the webhook GET verify
+WHATSAPP_APP_SECRET=           # (phase 2) for X-Hub-Signature-256 verification
 ```
+
+Phase 2 also needs `ANTHROPIC_API_KEY` (the bot's Claude API key) in the root
+env list. The human handoff contact (who the bot points people to when the
+handbook doesn't cover a question) is **hardcoded** in `src/lib/bot/prompt.ts`
+(`REFERRAL_NAME` / `REFERRAL_PHONE`), not env vars.
 
 The phone number must be a number **not** currently on consumer WhatsApp. Meta
 provides a free test number for development before registering the real one.
@@ -158,7 +177,8 @@ permanent.
 | `WHATSAPP_BUSINESS_ACCOUNT_ID` (WABA) | ✅ | `1038146275559467` |
 | Access token | ✅ | in `.env.local` (verified working via read-only call) |
 | Payment method | ✅ | added (required for business-initiated/template sends) |
-| Webhook verify token | ✅ | pre-generated in `.env.local`; callback URL not wired (phase 2) |
+| Webhook verify token | ✅ | in `.env.local`; endpoint built (see phase 2 progress) — Meta callback URL + `messages` field subscription still to register in the app dashboard |
+| App secret | ✅ | in `.env.local` (used by the webhook signature check) |
 | Welcome template | ⬜ | not yet created — see next steps |
 
 The real SA SIM is a dedicated line (recycled prepaid, claimed + cleared off
@@ -196,3 +216,27 @@ consumer WhatsApp before registering).
 
 `scripts/wa-smoke-test.ts` is a throwaway end-to-end check (hello_world); delete
 once a real template + UI exist.
+
+### Phase 2 build progress (inbound bot)
+
+A handbook-grounded FAQ bot: an inbound text gets a Claude-written answer from
+the admin handbook, or a human-handoff line when the handbook doesn't cover it.
+
+- ✅ **Schema** — `wa_conversations` added, `wa_messages.candidate_id` made
+  nullable + `conversation_id` FK added (`drizzle/0009_mature_star_brand.sql`).
+- ✅ **Bot brain** — `src/lib/bot/` (`prompt.ts` assembles persona + grounding
+  rules + the live handbook into a cached system prompt; `bot.ts` calls Claude
+  Opus 4.8 with adaptive thinking and returns the reply text). Anti-hallucination
+  is enforced entirely in the prompt: answer from the handbook, else hand off.
+- ✅ **Inbound lib** — `webhook.ts` (GET subscription verify, X-Hub-Signature-256
+  check, payload → `InboundTextMessage`) + `inbound.ts` (upsert conversation,
+  dedupe on Meta message id, log inbound, call the bot, send + log the reply;
+  sent_by = null = bot). `client.sendText` added for free-form (in-window) sends.
+- ✅ **Webhook route** — `src/app/api/whatsapp/webhook/route.ts` (GET + POST).
+  Responds 200 immediately; runs the bot + reply in Next's `after()`.
+- ⬜ **Wire-up + test** — register the callback URL + subscribe the `messages`
+  field in the Meta app dashboard, set `ANTHROPIC_API_KEY`,
+  author handbook pages, then test on the test number → real number.
+- Out of scope (deferred to the fuller bot): per-conversation bot/human toggle,
+  shared-inbox UI, DB-aware answers, and phone↔candidate matching. Non-text
+  inbound (images, etc.) is currently ignored.

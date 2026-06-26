@@ -173,17 +173,25 @@ export async function listRecentMessages(limit = 100): Promise<MessageLogItem[]>
     .orderBy(desc(waMessages.createdAt))
     .limit(limit);
 
-  return rows.map((r) => ({
-    id: r.id,
-    candidateId: r.candidateId,
-    candidateName: toCandidateView({
-      id: r.candidateId,
-      data: r.data as Record<string, string>,
-    }).fullName,
-    templateName: r.templateName,
-    body: r.body,
-    status: r.status,
-    error: r.error,
-    createdAt: r.createdAt,
-  }));
+  // The inner join restricts to candidate-linked rows, so candidateId is never
+  // null here — flatMap narrows the type and drops any defensively (Phase 2
+  // inbound/bot rows carry a null candidateId and don't belong in this log).
+  return rows.flatMap((r) => {
+    if (r.candidateId === null) return [];
+    return [
+      {
+        id: r.id,
+        candidateId: r.candidateId,
+        candidateName: toCandidateView({
+          id: r.candidateId,
+          data: r.data as Record<string, string>,
+        }).fullName,
+        templateName: r.templateName,
+        body: r.body,
+        status: r.status,
+        error: r.error,
+        createdAt: r.createdAt,
+      },
+    ];
+  });
 }

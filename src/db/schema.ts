@@ -161,24 +161,69 @@ export const screening = pgTable(
   ],
 );
 
+// ─── WhatsApp conversations (app-state) ──────────────────────────────────────
+//
+// One inbound thread per phone number (Phase 2). App-only state in its OWN
+// table; Sync cannot touch it. Keyed by phone — NOT candidate_id — because an
+// inbound message can arrive from a number that matches no candidate, so the
+// thread must have a home regardless. `candidate_id` is a best-effort link to a
+// known candidate (nullable; populated later when phone↔candidate matching lands
+// with the DB-aware bot). `wa_messages` rows point here via `conversation_id`.
+//
+// The per-conversation bot/human toggle and assignment (mode, assigned_to) are
+// deliberately NOT here yet — the first cut is a handbook-grounded auto-reply
+// bot with a human-handoff line, not a shared inbox. See src/lib/whatsapp/CLAUDE.md.
+
+export const waConversations = pgTable("wa_conversations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // The contact's number in E.164 digits (no leading "+"), Meta's wire format.
+  // The stable key for the thread; one conversation per number.
+  waPhone: text("wa_phone").notNull().unique(),
+  // Best-effort link to a known candidate. Nullable: inbound can come from a
+  // stranger, and phone↔candidate matching is deferred to the DB-aware bot.
+  candidateId: uuid("candidate_id").references(() => candidates.id, {
+    onDelete: "set null",
+  }),
+  // When the 24h customer-service window closes (24h after the last inbound).
+  // Free-form replies — including the bot's — are only allowed before this.
+  windowExpiresAt: timestamp("window_expires_at", { withTimezone: true }),
+  // Timestamp of the most recent inbound message, for the window clock + sorting.
+  lastInboundAt: timestamp("last_inbound_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 // ─── WhatsApp messages (app-state) ───────────────────────────────────────────
 //
 // The outbound (and later inbound) message log — the core of WhatsApp Phase 1.
 // App-only state, so it lives in its OWN table keyed to candidates.id (never
 // columns on the mirror — see src/db/CLAUDE.md). Sync physically cannot touch it.
 //
-// Phase 1 logs directly against the candidate (no wa_conversations thread table
-// yet — that arrives with inbound/threading in Phase 2). Both phases share THIS
+// Phase 1 logs outbound templates directly against the candidate. Phase 2 adds
+// inbound + bot replies, which thread through `wa_conversations` (keyed by phone,
+// since an inbound can come from a number that matches no candidate) — those
+// rows carry `conversation_id` and a null `candidate_id`. Both phases share THIS
 // table so later work is additive. See src/lib/whatsapp/CLAUDE.md.
 
 export const waMessages = pgTable(
   "wa_messages",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    candidateId: uuid("candidate_id")
-      .notNull()
-      .references(() => candidates.id, { onDelete: "cascade" }),
-    // 'out' = business-initiated (Phase 1); 'in' = candidate reply (Phase 2).
+    // The candidate this message belongs to, when known. Set for Phase 1
+    // outbound template sends. NULL for Phase 2 inbound/bot traffic, which is
+    // keyed by `conversation_id` instead — an inbound number may match no
+    // candidate. Every row has at least one of {candidate_id, conversation_id}.
+    candidateId: uuid("candidate_id").references(() => candidates.id, {
+      onDelete: "cascade",
+    }),
+    // The phone-keyed conversation thread this message belongs to (Phase 2
+    // inbound + bot replies). NULL for Phase 1 outbound template sends, which
+    // predate threading and key off `candidate_id`.
+    conversationId: uuid("conversation_id").references(() => waConversations.id, {
+      onDelete: "cascade",
+    }),
+    // 'out' = business-initiated (Phase 1) or bot reply (Phase 2); 'in' =
+    // candidate/contact reply (Phase 2).
     direction: text("direction").notNull(),
     // 'template' = pre-approved template send (the only Phase 1 path — first
     // contact is out-of-window so it MUST be a template); 'text' = free-form,
@@ -211,3 +256,36 @@ export const waMessages = pgTable(
     ),
   ],
 );
+
+// ─── Handbook pages (app-state) ──────────────────────────────────────────────
+//
+// The knowledge base the WhatsApp chatbot answers from (Phase 2). App-only
+// content authored in the admin UI, so it lives in its OWN table; Sync never
+// touches it. NOT keyed to candidates — this is shared reference material, not
+// per-candidate state.
+//
+// One row per page (e.g. "Visa application", "Accommodation"), so the handbook
+// can be edited in small pieces instead of one giant document. At query time
+// the bot concatenates every page — sorted by (position, createdAt) for a
+// byte-stable, prompt-cacheable system prompt — and answers strictly from it,
+// referring to a human when a question isn't covered. ~10 pages total fits in
+// the context window with room to spare, so no search/RAG is needed. See
+// src/lib/handbook/ and src/lib/whatsapp/CLAUDE.md.
+
+export const handbookPages = pgTable("handbook_pages", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // Page name, shown in the editor's page picker and used as the markdown
+  // heading when the page is assembled into the bot's handbook.
+  title: text("title").notNull(),
+  // The page body as markdown. May be empty (a freshly-created page).
+  content: text("content").notNull().default(""),
+  // Manual sort order for the page list and the assembled handbook. Lower
+  // first; ties broken by createdAt so the assembled text is deterministic.
+  position: integer("position").notNull().default(0),
+  // Admin who last saved this page. Null-safe if the user is later deleted.
+  updatedBy: uuid("updated_by").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});

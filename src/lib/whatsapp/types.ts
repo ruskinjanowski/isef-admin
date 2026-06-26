@@ -29,6 +29,18 @@ export type SendTemplateInput = {
   params: TemplateParam[];
 };
 
+/**
+ * What client.sendText needs: a free-form text message. Only valid inside the
+ * 24h customer-service window (Phase 2 bot replies) — first contact must still
+ * be a template (see {@link SendTemplateInput}).
+ */
+export type SendTextInput = {
+  /** Recipient in E.164 *without* the leading "+" (Meta's wire format). */
+  to: string;
+  /** The message body to send. */
+  body: string;
+};
+
 /** The bit of Meta's /messages success response we keep: the message id. */
 export type SendResult = {
   /** Meta's `wa_message_id` ("wamid.…"), our correlation key for status webhooks. */

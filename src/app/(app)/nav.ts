@@ -3,6 +3,7 @@ import {
   RefreshCw,
   ShieldCheck,
   MessageCircle,
+  BookOpen,
   type LucideIcon,
 } from "lucide-react";
 
@@ -21,6 +22,7 @@ export type NavItem = {
 export const NAV_ITEMS: NavItem[] = [
   { title: "Candidates", href: "/", icon: Users, matchNested: false },
   { title: "Messages", href: "/messages", icon: MessageCircle, matchNested: true, adminOnly: true },
+  { title: "Handbook", href: "/handbook", icon: BookOpen, matchNested: true, adminOnly: true },
   { title: "Sync", href: "/import", icon: RefreshCw, matchNested: true, adminOnly: true },
   { title: "Users", href: "/users", icon: ShieldCheck, matchNested: true, adminOnly: true },
 ];

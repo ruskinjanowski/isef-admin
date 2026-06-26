@@ -57,6 +57,20 @@
       "when": 1782382026290,
       "tag": "0007_grey_gressill",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1782451589700,
+      "tag": "0008_melted_strong_guy",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1782452885466,
+      "tag": "0009_mature_star_brand",
+      "breakpoints": true
     }
   ]
 }

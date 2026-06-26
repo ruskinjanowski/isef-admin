@@ -59,7 +59,10 @@ BETTER_AUTH_URL=               # base URL
 GOOGLE_SERVICE_ACCOUNT_JSON=   # service account key (Sheets + Drive read)
 SOURCE_SHEET_ID=               # read-only candidate sheet
 RESEND_API_KEY=
+ANTHROPIC_API_KEY=             # WhatsApp chatbot (Phase 2) — Claude API
 ```
+
+WhatsApp Cloud API vars (`WHATSAPP_*`) are documented in `src/lib/whatsapp/CLAUDE.md`.
 
 ## Status
 
