@@ -3,10 +3,10 @@
 // normalisation (phone.ts) and the DB log (`wa_messages`). client.ts is never
 // called from the UI directly. See src/lib/whatsapp/CLAUDE.md.
 
-import { desc, eq, inArray } from "drizzle-orm";
+import { desc, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "@/db";
-import { candidates, waMessages } from "@/db/schema";
+import { candidates, waConversations, waMessages } from "@/db/schema";
 import { toCandidateView, type CandidateView } from "@/lib/candidates/view";
 import { sendTemplate } from "./client";
 import { normalizePhone } from "./phone";
@@ -71,6 +71,27 @@ export async function sendTemplateToCandidates(
   return outcomes;
 }
 
+/**
+ * Upsert the phone-keyed conversation for an outbound send, linking it to the
+ * candidate. Doesn't touch `windowExpiresAt`/`lastInboundAt` — those track the
+ * 24h customer-service window off the contact's *inbound* messages, which an
+ * outbound template send isn't.
+ */
+async function upsertConversationForSend(
+  waPhone: string,
+  candidateId: string,
+): Promise<string> {
+  const [conversation] = await db
+    .insert(waConversations)
+    .values({ waPhone, candidateId })
+    .onConflictDoUpdate({
+      target: waConversations.waPhone,
+      set: { candidateId, updatedAt: new Date() },
+    })
+    .returning({ id: waConversations.id });
+  return conversation.id;
+}
+
 /** Resolve, log, send and reconcile a single candidate. Internal. */
 async function sendOne(
   view: CandidateView,
@@ -81,12 +102,21 @@ async function sendOne(
   const phone = normalizePhone(view.contact);
   const body = renderBody(template, view);
 
+  // Thread the send into the same phone-keyed conversation inbound replies
+  // use, so the Conversations UI is the one place to see everything — a
+  // template send and any reply live in the same thread. Only when the
+  // number resolves; a bad number never reaches Meta or gets a conversation.
+  const conversationId = phone.ok
+    ? await upsertConversationForSend(phone.e164, view.id)
+    : null;
+
   // Log the attempt up front so a crash mid-send still leaves a trace. A bad
   // number never reaches Meta — record it failed and move on.
   const [logged] = await db
     .insert(waMessages)
     .values({
       candidateId: view.id,
+      conversationId,
       direction: "out",
       type: "template",
       templateName: template.key,
@@ -143,55 +173,205 @@ async function sendOne(
   }
 }
 
-/** A logged message joined with its candidate's display name, for the log UI. */
-export type MessageLogItem = {
+/**
+ * Best-effort phone → candidate lookup for conversations with no `candidateId`
+ * link (e.g. an inbound message from a number that predates the outbound-send
+ * linking, or was never matched). Computed live from the candidate mirror's
+ * contact field on each read — not persisted back to `wa_conversations` — so
+ * it always reflects the current sheet data but costs one full table scan per
+ * request that needs it. Fine at ~1k candidates; revisit if that changes.
+ */
+async function buildPhoneMatchMap(): Promise<
+  Map<string, { id: string; name: string }>
+> {
+  const rows = await db
+    .select({ id: candidates.id, data: candidates.data })
+    .from(candidates);
+
+  const map = new Map<string, { id: string; name: string }>();
+  for (const r of rows) {
+    const view = toCandidateView({
+      id: r.id,
+      data: r.data as Record<string, string>,
+    });
+    const phone = normalizePhone(view.contact);
+    if (phone.ok) map.set(phone.e164, { id: view.id, name: view.fullName });
+  }
+  return map;
+}
+
+/** A conversation for the list view, with its most recent message as a preview. */
+export type ConversationListItem = {
   id: string;
-  candidateId: string;
-  candidateName: string;
-  templateName: string | null;
-  body: string | null;
-  status: string;
-  error: string | null;
-  createdAt: Date;
+  waPhone: string;
+  candidateId: string | null;
+  candidateName: string | null;
+  lastMessageBody: string | null;
+  lastMessageDirection: "in" | "out" | null;
+  lastMessageAt: Date | null;
+  windowExpiresAt: Date | null;
 };
 
-/** Most-recent-first slice of the outbound/inbound log for the dashboard. */
-export async function listRecentMessages(limit = 100): Promise<MessageLogItem[]> {
-  const rows = await db
+export type ConversationListResult = {
+  items: ConversationListItem[];
+  total: number;
+};
+
+/** Phase 2 conversations, most-recently-active first, each with a last-message preview. */
+export async function listConversations(
+  opts: { limit?: number; offset?: number } = {},
+): Promise<ConversationListResult> {
+  const { limit = 20, offset = 0 } = opts;
+
+  const [{ count }] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(waConversations);
+
+  const convos = await db
     .select({
-      id: waMessages.id,
-      candidateId: waMessages.candidateId,
+      id: waConversations.id,
+      waPhone: waConversations.waPhone,
+      candidateId: waConversations.candidateId,
       data: candidates.data,
-      templateName: waMessages.templateName,
+      windowExpiresAt: waConversations.windowExpiresAt,
+      lastInboundAt: waConversations.lastInboundAt,
+    })
+    .from(waConversations)
+    .leftJoin(candidates, eq(waConversations.candidateId, candidates.id))
+    .orderBy(desc(waConversations.lastInboundAt))
+    .limit(limit)
+    .offset(offset);
+
+  if (convos.length === 0) return { items: [], total: count };
+
+  // One extra query for last-message previews rather than a correlated
+  // subquery — at our volume (~1k messages total) this is simpler and fast
+  // enough; take the first (newest) row per conversation in JS.
+  const msgs = await db
+    .select({
+      conversationId: waMessages.conversationId,
       body: waMessages.body,
-      status: waMessages.status,
-      error: waMessages.error,
+      direction: waMessages.direction,
       createdAt: waMessages.createdAt,
     })
     .from(waMessages)
-    .innerJoin(candidates, eq(waMessages.candidateId, candidates.id))
-    .orderBy(desc(waMessages.createdAt))
-    .limit(limit);
+    .where(
+      inArray(
+        waMessages.conversationId,
+        convos.map((c) => c.id),
+      ),
+    )
+    .orderBy(desc(waMessages.createdAt));
 
-  // The inner join restricts to candidate-linked rows, so candidateId is never
-  // null here — flatMap narrows the type and drops any defensively (Phase 2
-  // inbound/bot rows carry a null candidateId and don't belong in this log).
-  return rows.flatMap((r) => {
-    if (r.candidateId === null) return [];
-    return [
-      {
-        id: r.id,
-        candidateId: r.candidateId,
-        candidateName: toCandidateView({
-          id: r.candidateId,
-          data: r.data as Record<string, string>,
-        }).fullName,
-        templateName: r.templateName,
-        body: r.body,
-        status: r.status,
-        error: r.error,
-        createdAt: r.createdAt,
-      },
-    ];
+  const lastByConvo = new Map<string, (typeof msgs)[number]>();
+  for (const m of msgs) {
+    if (!m.conversationId || lastByConvo.has(m.conversationId)) continue;
+    lastByConvo.set(m.conversationId, m);
+  }
+
+  const phoneMap = convos.some((c) => c.candidateId === null)
+    ? await buildPhoneMatchMap()
+    : null;
+
+  const items = convos.map((c) => {
+    const last = lastByConvo.get(c.id);
+    const linked =
+      c.candidateId && c.data
+        ? {
+            id: c.candidateId,
+            name: toCandidateView({
+              id: c.candidateId,
+              data: c.data as Record<string, string>,
+            }).fullName,
+          }
+        : phoneMap?.get(c.waPhone) ?? null;
+    return {
+      id: c.id,
+      waPhone: c.waPhone,
+      candidateId: linked?.id ?? null,
+      candidateName: linked?.name ?? null,
+      lastMessageBody: last?.body ?? null,
+      lastMessageDirection: (last?.direction as "in" | "out" | undefined) ?? null,
+      lastMessageAt: last?.createdAt ?? c.lastInboundAt,
+      windowExpiresAt: c.windowExpiresAt,
+    };
   });
+
+  return { items, total: count };
+}
+
+/** Conversation header info for the thread view. */
+export type ConversationDetail = {
+  id: string;
+  waPhone: string;
+  candidateId: string | null;
+  candidateName: string | null;
+  windowExpiresAt: Date | null;
+};
+
+/** A single message in a conversation thread, in chronological order. */
+export type ConversationThreadMessage = {
+  id: string;
+  direction: "in" | "out";
+  body: string | null;
+  status: string;
+  createdAt: Date;
+};
+
+/** One conversation's header info, or null if the id doesn't exist. */
+export async function getConversation(
+  id: string,
+): Promise<ConversationDetail | null> {
+  const [row] = await db
+    .select({
+      id: waConversations.id,
+      waPhone: waConversations.waPhone,
+      candidateId: waConversations.candidateId,
+      data: candidates.data,
+      windowExpiresAt: waConversations.windowExpiresAt,
+    })
+    .from(waConversations)
+    .leftJoin(candidates, eq(waConversations.candidateId, candidates.id))
+    .where(eq(waConversations.id, id))
+    .limit(1);
+
+  if (!row) return null;
+
+  const linked =
+    row.candidateId && row.data
+      ? {
+          id: row.candidateId,
+          name: toCandidateView({
+            id: row.candidateId,
+            data: row.data as Record<string, string>,
+          }).fullName,
+        }
+      : (await buildPhoneMatchMap()).get(row.waPhone) ?? null;
+
+  return {
+    id: row.id,
+    waPhone: row.waPhone,
+    candidateId: linked?.id ?? null,
+    candidateName: linked?.name ?? null,
+    windowExpiresAt: row.windowExpiresAt,
+  };
+}
+
+/** A conversation's full message history, oldest first (the WhatsApp thread order). */
+export async function getConversationMessages(
+  conversationId: string,
+): Promise<ConversationThreadMessage[]> {
+  const rows = await db
+    .select({
+      id: waMessages.id,
+      direction: waMessages.direction,
+      body: waMessages.body,
+      status: waMessages.status,
+      createdAt: waMessages.createdAt,
+    })
+    .from(waMessages)
+    .where(eq(waMessages.conversationId, conversationId))
+    .orderBy(waMessages.createdAt);
+
+  return rows.map((r) => ({ ...r, direction: r.direction as "in" | "out" }));
 }

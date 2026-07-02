@@ -94,8 +94,11 @@ src/lib/whatsapp/
                  #   logic — just the HTTP boundary. Returns Meta's wa_message_id.
   templates.ts   # Registry of our approved templates (name, language, variable
                  #   mapping). Single source of truth for what we can send.
-  messages.ts    # Outbound domain ops: sendTemplateToCandidates, listRecentMessages.
-                 #   Orchestrates client + DB. The UI bridge calls this, not client.ts.
+  messages.ts    # Domain ops: sendTemplateToCandidates (upserts the phone-keyed
+                 #   conversation too, so sends and replies thread together),
+                 #   listConversations/getConversation/getConversationMessages
+                 #   for the UI. Orchestrates client + DB; the UI bridge calls
+                 #   this, not client.ts.
   webhook.ts     # (phase 2) HTTP boundary for inbound: GET subscription verify,
                  #   X-Hub-Signature-256 check, parse Meta payload → InboundTextMessage.
   inbound.ts     # (phase 2) Inbound domain op: upsert conversation, dedupe, log,
@@ -113,24 +116,29 @@ is the only caller; the webhook route is a thin bridge over webhook.ts + inbound
 - **`src/app/api/whatsapp/...`** — route handlers stay thin: parse/authorize the
   request, call `messages.ts`, return. (Webhook verify+receive lands here in
   phase 2.)
-- **`src/app/(app)/whatsapp/`** (or a "Messages" nav entry) — the dashboard UI:
-  conversations/log list + a "Send welcome" action. Thin; delegates to a server
-  action or API route that calls `src/lib/whatsapp/messages.ts`. No Meta logic in
-  `.tsx` files or `actions.ts` beyond calling the lib.
+- **`src/app/(app)/messages/`** — the dashboard UI: a paginated conversation
+  list (`page.tsx`, 20/page) and a per-conversation thread view (`[id]/page.tsx`,
+  WhatsApp-style bubbles). Read-only — no reply composer; manual replies are
+  handled from the human business number, outside this app. Thin; delegates to
+  `src/lib/whatsapp/messages.ts`. No Meta logic in `.tsx` files.
 
 ## Data model (app-state — sync never touches it)
 
 Per `src/db/CLAUDE.md`, this is app state in its **own** tables, keyed to
 `candidates.id` (never columns on the `candidates` mirror, never the email):
 
-- **`wa_conversations`** (added in phase 2, `drizzle/0009_*`) — one inbound
-  thread per phone number. Keyed by `wa_phone` (E.164 digits, unique) — NOT
-  candidate_id — because an inbound can arrive from a number that matches no
-  candidate. `candidate_id` is a nullable best-effort link (populated later when
-  phone↔candidate matching lands with the DB-aware bot). `window_expires_at` +
-  `last_inbound_at` track the 24h customer-service window. The per-conversation
-  `mode` ('bot'|'human') and `assigned_to` toggle are deliberately NOT here yet —
-  the first cut is an auto-reply bot with a handoff line, not a shared inbox.
+- **`wa_conversations`** (added in phase 2, `drizzle/0009_*`) — one thread per
+  phone number, shared by outbound sends and inbound replies. Keyed by
+  `wa_phone` (E.164 digits, unique) — NOT candidate_id — because an inbound can
+  arrive from a number that matches no candidate. `candidate_id` is a nullable
+  best-effort link: set directly when a template send goes out (we know the
+  candidate) or on inbound-only conversations, resolved at read time in
+  `messages.ts` by matching the contact's phone against the candidate mirror
+  (not persisted — see `buildPhoneMatchMap`). `window_expires_at` +
+  `last_inbound_at` track the 24h customer-service window off *inbound*
+  messages only. The per-conversation `mode` ('bot'|'human') and `assigned_to`
+  toggle are deliberately NOT here yet — the first cut is an auto-reply bot
+  with a handoff line, not a shared inbox.
 - **`wa_messages`** — the shared log. Phase 1 outbound template sends key off
   `candidate_id`; phase 2 inbound + bot replies key off `conversation_id` (and
   carry a null `candidate_id`). Both columns are now nullable (`0009_*` dropped
@@ -202,7 +210,7 @@ consumer WhatsApp before registering).
   auth/transport/error-handling all work, see the `#131058` note above),
   `phone.ts` (free-text → E.164, flags ambiguous numbers rather than guessing),
   `templates.ts` (registry + per-candidate variable resolution), `messages.ts`
-  (`sendTemplateToCandidates` + `listRecentMessages`, logs every attempt).
+  (`sendTemplateToCandidates`, logs every attempt).
 - ⬜ **Welcome template** — submit a Utility template named `welcome`, language
   `en`, body matching `templates.ts`'s `WA_TEMPLATES[0].bodyTemplate`
   (`Hi {{1}}, …`). **Now critical path** — the first real send needs it (the
@@ -210,9 +218,10 @@ consumer WhatsApp before registering).
   entry if Meta edits it during review.
 - ⬜ **Bridge + UI** — a server action/route that calls
   `messages.sendTemplateToCandidates`; a candidate table with **persistent
-  checkbox selection across pages** + a template picker + a "Send" action, plus a
-  message-log view backed by `listRecentMessages`. Targeting is checkbox-only
-  (decided 2026-06-25); filter-based "send to all matching" was deferred.
+  checkbox selection across pages** + a template picker + a "Send" action.
+  Targeting is checkbox-only (decided 2026-06-25); filter-based "send to all
+  matching" was deferred. The message view itself is done — see phase 2
+  progress below; sends and replies now share the same conversation UI.
 
 `scripts/wa-smoke-test.ts` is a throwaway end-to-end check (hello_world); delete
 once a real template + UI exist.
@@ -234,9 +243,18 @@ the admin handbook, or a human-handoff line when the handbook doesn't cover it.
   sent_by = null = bot). `client.sendText` added for free-form (in-window) sends.
 - ✅ **Webhook route** — `src/app/api/whatsapp/webhook/route.ts` (GET + POST).
   Responds 200 immediately; runs the bot + reply in Next's `after()`.
+- ✅ **Conversation UI** — `src/app/(app)/messages/` replaces the old Phase 1
+  send-log page: a paginated (20/page) conversation list + a WhatsApp-style
+  thread view (`messages/[id]/page.tsx`), read-only. `sendTemplateToCandidates`
+  now also upserts the phone-keyed conversation on send, so outbound templates
+  and inbound replies show up in the same thread — Phase 1 and Phase 2 share
+  one UI. Candidate names are resolved either via the stored `candidate_id`
+  link or, when absent, a live phone match against the candidate mirror
+  (display-only, not persisted).
 - ⬜ **Wire-up + test** — register the callback URL + subscribe the `messages`
   field in the Meta app dashboard, set `ANTHROPIC_API_KEY`,
   author handbook pages, then test on the test number → real number.
 - Out of scope (deferred to the fuller bot): per-conversation bot/human toggle,
-  shared-inbox UI, DB-aware answers, and phone↔candidate matching. Non-text
-  inbound (images, etc.) is currently ignored.
+  shared-inbox UI, DB-aware answers, and a reply composer in this app (manual
+  replies go out from the human business number instead). Non-text inbound
+  (images, etc.) is currently ignored.
