@@ -3,7 +3,7 @@
 // normalisation (phone.ts) and the DB log (`wa_messages`). client.ts is never
 // called from the UI directly. See src/lib/whatsapp/CLAUDE.md.
 
-import { desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import { candidates, waConversations, waMessages } from "@/db/schema";
@@ -17,8 +17,9 @@ import { WhatsAppApiError } from "./types";
 export type SendOutcome = {
   candidateId: string;
   candidateName: string;
-  status: "sent" | "failed";
-  /** Failure reason (bad number or Meta error); absent on success. */
+  /** "skipped" = already sent this template before, so not re-sent. */
+  status: "sent" | "failed" | "skipped";
+  /** Failure/skip reason (bad number, Meta error, already sent); absent on success. */
   error?: string;
   /** Meta's wa_message_id on success. */
   waMessageId?: string;
@@ -31,6 +32,10 @@ export type SendOutcome = {
  * outcome. Each attempt is logged (including failures) so the log is the full
  * audit trail. Never throws for a single bad send; the failure lands in the
  * returned outcome and the log row.
+ *
+ * Never double-sends: a candidate who already has a non-failed log row for this
+ * template (queued/sent/delivered/read) is skipped and not logged again. Failed
+ * attempts don't count, so fixing a bad number and re-sending just works.
  */
 export async function sendTemplateToCandidates(
   candidateIds: string[],
@@ -54,8 +59,26 @@ export async function sendTemplateToCandidates(
     ]),
   );
 
+  // Candidates this template already went out to. "queued" counts too: it's
+  // either in flight or crashed mid-send, and Meta may have accepted it.
+  const already = new Set(
+    (
+      await db
+        .select({ candidateId: waMessages.candidateId })
+        .from(waMessages)
+        .where(
+          and(
+            inArray(waMessages.candidateId, candidateIds),
+            eq(waMessages.direction, "out"),
+            eq(waMessages.templateName, template.key),
+            ne(waMessages.status, "failed"),
+          ),
+        )
+    ).map((r) => r.candidateId),
+  );
+
   const outcomes: SendOutcome[] = [];
-  for (const id of candidateIds) {
+  for (const id of new Set(candidateIds)) {
     const view = byId.get(id);
     if (!view) {
       outcomes.push({
@@ -63,6 +86,15 @@ export async function sendTemplateToCandidates(
         candidateName: "(unknown)",
         status: "failed",
         error: "candidate not found",
+      });
+      continue;
+    }
+    if (already.has(id)) {
+      outcomes.push({
+        candidateId: id,
+        candidateName: view.fullName,
+        status: "skipped",
+        error: `already sent "${template.key}"`,
       });
       continue;
     }
@@ -99,7 +131,7 @@ async function sendOne(
   sentBy: string | null,
 ): Promise<SendOutcome> {
   const template = getTemplate(templateKey)!;
-  const phone = normalizePhone(view.contact);
+  const phone = normalizePhone(view.contact, [view.location, view.nationality]);
   const body = renderBody(template, view);
 
   // Thread the send into the same phone-keyed conversation inbound replies
@@ -194,7 +226,7 @@ async function buildPhoneMatchMap(): Promise<
       id: r.id,
       data: r.data as Record<string, string>,
     });
-    const phone = normalizePhone(view.contact);
+    const phone = normalizePhone(view.contact, [view.location, view.nationality]);
     if (phone.ok) map.set(phone.e164, { id: view.id, name: view.fullName });
   }
   return map;

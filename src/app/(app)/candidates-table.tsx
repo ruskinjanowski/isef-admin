@@ -168,20 +168,26 @@ export function CandidatesTable({
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Could not send messages.");
 
-      const { sent, failed } = json as {
+      const { sent, failed, skipped } = json as {
         sent: number;
         failed: number;
+        skipped: number;
         outcomes: { candidateName: string; status: string; error?: string }[];
       };
+      // Already-sent candidates are skipped server-side, never double-sent.
+      const skippedNote =
+        skipped > 0 ? `, ${skipped} skipped (already sent)` : "";
       if (failed > 0) {
         const reasons = (json.outcomes as { status: string; candidateName: string; error?: string }[])
           .filter((o) => o.status === "failed")
           .slice(0, 3)
           .map((o) => `${o.candidateName}: ${o.error ?? "failed"}`)
           .join("\n");
-        toast.warning(`Sent ${sent}, ${failed} failed.`, {
+        toast.warning(`Sent ${sent}, ${failed} failed${skippedNote}.`, {
           description: reasons,
         });
+      } else if (skipped > 0) {
+        toast.success(`Sent ${sent}${skippedNote}.`);
       } else {
         toast.success(`Sent to ${sent} candidate${sent === 1 ? "" : "s"}.`);
       }
