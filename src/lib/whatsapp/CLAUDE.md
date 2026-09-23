@@ -104,7 +104,9 @@ src/lib/whatsapp/
   inbound.ts     # (phase 2) Inbound domain op: upsert conversation, dedupe, log,
                  #   call the bot (src/lib/bot), send + log the reply. Called from
                  #   the webhook route's after() hook. Never touches the HTTP boundary.
-  phone.ts       # Free-text "WhatsApp Number" cell → E.164 digits, flags ambiguous.
+  phone.ts       # Free-text "WhatsApp Number" cell → E.164 digits (libphonenumber),
+                 #   country inferred from location/nationality; flags ambiguous.
+  country.ts     # Free-text location/nationality → ISO country codes (phone hint).
   types.ts       # Shared types (message direction, status, Meta payload shapes).
   CLAUDE.md      # this file
 ```

@@ -3,28 +3,32 @@ import Link from "next/link";
 
 import { getCurrentUser, isAdmin } from "@/lib/access";
 import { listConversations } from "@/lib/whatsapp/messages";
+import { ConversationSearch } from "./conversation-search";
 
 const PAGE_SIZE = 20;
 
 // Admin-only WhatsApp conversation list — every phone-keyed thread, both
 // outbound template sends and inbound/bot replies (they share one
 // conversation per number), most recently active first. Paginated 20 at a
-// time since this can grow into the hundreds. Links into the thread view.
+// time since this can grow into the hundreds. Searchable by candidate name or
+// phone (`?q=`). Links into the thread view.
 export default async function MessagesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string }>;
+  searchParams: Promise<{ page?: string; q?: string }>;
 }) {
   const me = await getCurrentUser();
   if (!me || !isAdmin(me)) {
     redirect("/");
   }
 
-  const { page: pageParam } = await searchParams;
+  const { page: pageParam, q = "" } = await searchParams;
   const page = Math.max(1, Number(pageParam) || 1);
+  const search = q.trim();
   const { items: conversations, total } = await listConversations({
     limit: PAGE_SIZE,
     offset: (page - 1) * PAGE_SIZE,
+    search,
   });
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -38,7 +42,11 @@ export default async function MessagesPage({
         </p>
       </div>
 
-      <div className="mt-6 divide-y rounded-lg border">
+      <div className="mt-6">
+        <ConversationSearch initial={search} />
+      </div>
+
+      <div className="mt-4 divide-y rounded-lg border">
         {conversations.map((c) => (
           <Link
             key={c.id}
@@ -61,20 +69,26 @@ export default async function MessagesPage({
         ))}
         {conversations.length === 0 && (
           <div className="px-4 py-10 text-center text-muted-foreground">
-            No conversations yet.
+            {search
+              ? `No conversations match "${search}".`
+              : "No conversations yet."}
           </div>
         )}
       </div>
 
       {totalPages > 1 && (
         <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
-          <PageLink page={page - 1} disabled={page <= 1}>
+          <PageLink page={page - 1} search={search} disabled={page <= 1}>
             ← Previous
           </PageLink>
           <span>
             Page {page} of {totalPages}
           </span>
-          <PageLink page={page + 1} disabled={page >= totalPages}>
+          <PageLink
+            page={page + 1}
+            search={search}
+            disabled={page >= totalPages}
+          >
             Next →
           </PageLink>
         </div>
@@ -85,10 +99,12 @@ export default async function MessagesPage({
 
 function PageLink({
   page,
+  search,
   disabled,
   children,
 }: {
   page: number;
+  search: string;
   disabled: boolean;
   children: React.ReactNode;
 }) {
@@ -96,7 +112,10 @@ function PageLink({
     return <span className="opacity-40">{children}</span>;
   }
   return (
-    <Link href={`/messages?page=${page}`} className="hover:underline">
+    <Link
+      href={`/messages?page=${page}${search ? `&q=${encodeURIComponent(search)}` : ""}`}
+      className="hover:underline"
+    >
       {children}
     </Link>
   );

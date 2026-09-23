@@ -45,8 +45,9 @@ export async function POST(request: Request) {
       access.user.id,
     );
     const sent = outcomes.filter((o) => o.status === "sent").length;
-    const failed = outcomes.length - sent;
-    return Response.json({ outcomes, sent, failed });
+    const skipped = outcomes.filter((o) => o.status === "skipped").length;
+    const failed = outcomes.filter((o) => o.status === "failed").length;
+    return Response.json({ outcomes, sent, failed, skipped });
   } catch (error) {
     console.error("WhatsApp bulk send failed:", error);
     return Response.json({ error: "Could not send messages." }, { status: 500 });

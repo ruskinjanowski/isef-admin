@@ -3,22 +3,30 @@
 // normalisation (phone.ts) and the DB log (`wa_messages`). client.ts is never
 // called from the UI directly. See src/lib/whatsapp/CLAUDE.md.
 
-import { desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 
 import { db } from "@/db";
 import { candidates, waConversations, waMessages } from "@/db/schema";
-import { toCandidateView, type CandidateView } from "@/lib/candidates/view";
+import {
+  COL,
+  toCandidateView,
+  type CandidateView,
+} from "@/lib/candidates/view";
 import { sendTemplate } from "./client";
 import { normalizePhone } from "./phone";
 import { getTemplate, renderBody } from "./templates";
 import { WhatsAppApiError } from "./types";
 
+/** `wa_messages` statuses meaning Meta accepted the send. */
+const SUCCESS_STATUSES = ["sent", "delivered", "read"];
+
 /** Per-candidate result of a (bulk) send, in the order requested. */
 export type SendOutcome = {
   candidateId: string;
   candidateName: string;
-  status: "sent" | "failed";
-  /** Failure reason (bad number or Meta error); absent on success. */
+  /** "skipped" = this template already reached them successfully. */
+  status: "sent" | "failed" | "skipped";
+  /** Failure/skip reason (bad number, Meta error, already sent); absent on success. */
   error?: string;
   /** Meta's wa_message_id on success. */
   waMessageId?: string;
@@ -31,6 +39,11 @@ export type SendOutcome = {
  * outcome. Each attempt is logged (including failures) so the log is the full
  * audit trail. Never throws for a single bad send; the failure lands in the
  * returned outcome and the log row.
+ *
+ * Never double-sends: a candidate this template already reached successfully
+ * (sent/delivered/read) is skipped and not logged again, whatever their number
+ * is now. Failed attempts don't count, so fixing a bad number and re-sending
+ * just works.
  */
 export async function sendTemplateToCandidates(
   candidateIds: string[],
@@ -54,8 +67,26 @@ export async function sendTemplateToCandidates(
     ]),
   );
 
+  // Candidates this template already reached successfully, on any number.
+  // Failed attempts (bad number, Meta error) don't count and can be re-sent.
+  const already = new Set(
+    (
+      await db
+        .select({ candidateId: waMessages.candidateId })
+        .from(waMessages)
+        .where(
+          and(
+            inArray(waMessages.candidateId, candidateIds),
+            eq(waMessages.direction, "out"),
+            eq(waMessages.templateName, template.key),
+            inArray(waMessages.status, SUCCESS_STATUSES),
+          ),
+        )
+    ).map((r) => r.candidateId),
+  );
+
   const outcomes: SendOutcome[] = [];
-  for (const id of candidateIds) {
+  for (const id of new Set(candidateIds)) {
     const view = byId.get(id);
     if (!view) {
       outcomes.push({
@@ -63,6 +94,15 @@ export async function sendTemplateToCandidates(
         candidateName: "(unknown)",
         status: "failed",
         error: "candidate not found",
+      });
+      continue;
+    }
+    if (already.has(id)) {
+      outcomes.push({
+        candidateId: id,
+        candidateName: view.fullName,
+        status: "skipped",
+        error: `already sent "${template.key}"`,
       });
       continue;
     }
@@ -99,7 +139,7 @@ async function sendOne(
   sentBy: string | null,
 ): Promise<SendOutcome> {
   const template = getTemplate(templateKey)!;
-  const phone = normalizePhone(view.contact);
+  const phone = normalizePhone(view.contact, [view.location, view.nationality]);
   const body = renderBody(template, view);
 
   // Thread the send into the same phone-keyed conversation inbound replies
@@ -194,7 +234,10 @@ async function buildPhoneMatchMap(): Promise<
       id: r.id,
       data: r.data as Record<string, string>,
     });
-    const phone = normalizePhone(view.contact);
+    const phone = normalizePhone(view.contact, [
+      view.location,
+      view.nationality,
+    ]);
     if (phone.ok) map.set(phone.e164, { id: view.id, name: view.fullName });
   }
   return map;
@@ -217,15 +260,57 @@ export type ConversationListResult = {
   total: number;
 };
 
-/** Phase 2 conversations, most-recently-active first, each with a last-message preview. */
+/**
+ * Conversation-list search predicate: matches the linked candidate's name, or
+ * the phone number. Phone matching ignores formatting and a leading trunk 0, so
+ * "082 539 4454" finds 27825394454. Unlinked conversations match by name via
+ * the live phone → candidate map, same as the list's name display.
+ */
+async function conversationSearch(search: string): Promise<SQL | undefined> {
+  const q = search.trim().toLowerCase();
+  if (!q) return undefined;
+
+  const cell = (header: string) => sql`${candidates.data} ->> ${header}`;
+  const name = sql`lower(concat_ws(' ', ${cell(COL.firstName)}, ${cell(
+    COL.lastName,
+  )}, ${cell(COL.fullName)}))`;
+  const conds: SQL[] = [
+    sql`${name} like ${"%" + q.replace(/[\\%_]/g, "\\$&") + "%"}`,
+  ];
+
+  const digits = q.replace(/\D/g, "").replace(/^0+/, "");
+  if (digits.length >= 3)
+    conds.push(sql`${waConversations.waPhone} like ${"%" + digits + "%"}`);
+
+  const unlinkedPhones = [...(await buildPhoneMatchMap())]
+    .filter(([, c]) => c.name.toLowerCase().includes(q))
+    .map(([phone]) => phone);
+  if (unlinkedPhones.length > 0) {
+    conds.push(
+      and(
+        sql`${waConversations.candidateId} is null`,
+        inArray(waConversations.waPhone, unlinkedPhones),
+      )!,
+    );
+  }
+  return or(...conds);
+}
+
+/**
+ * Phase 2 conversations, most-recently-active first, each with a last-message
+ * preview. `search` narrows by candidate name or phone number.
+ */
 export async function listConversations(
-  opts: { limit?: number; offset?: number } = {},
+  opts: { limit?: number; offset?: number; search?: string } = {},
 ): Promise<ConversationListResult> {
-  const { limit = 20, offset = 0 } = opts;
+  const { limit = 20, offset = 0, search = "" } = opts;
+  const where = await conversationSearch(search);
 
   const [{ count }] = await db
     .select({ count: sql<number>`count(*)::int` })
-    .from(waConversations);
+    .from(waConversations)
+    .leftJoin(candidates, eq(waConversations.candidateId, candidates.id))
+    .where(where);
 
   const convos = await db
     .select({
@@ -238,7 +323,12 @@ export async function listConversations(
     })
     .from(waConversations)
     .leftJoin(candidates, eq(waConversations.candidateId, candidates.id))
-    .orderBy(desc(waConversations.lastInboundAt))
+    .where(where)
+    // Latest activity either way: an inbound reply bumps last_inbound_at, an
+    // outbound template send bumps updated_at (greatest() skips nulls).
+    .orderBy(
+      sql`greatest(${waConversations.lastInboundAt}, ${waConversations.updatedAt}) desc`,
+    )
     .limit(limit)
     .offset(offset);
 
@@ -284,14 +374,15 @@ export async function listConversations(
               data: c.data as Record<string, string>,
             }).fullName,
           }
-        : phoneMap?.get(c.waPhone) ?? null;
+        : (phoneMap?.get(c.waPhone) ?? null);
     return {
       id: c.id,
       waPhone: c.waPhone,
       candidateId: linked?.id ?? null,
       candidateName: linked?.name ?? null,
       lastMessageBody: last?.body ?? null,
-      lastMessageDirection: (last?.direction as "in" | "out" | undefined) ?? null,
+      lastMessageDirection:
+        (last?.direction as "in" | "out" | undefined) ?? null,
       lastMessageAt: last?.createdAt ?? c.lastInboundAt,
       windowExpiresAt: c.windowExpiresAt,
     };
@@ -346,7 +437,7 @@ export async function getConversation(
             data: row.data as Record<string, string>,
           }).fullName,
         }
-      : (await buildPhoneMatchMap()).get(row.waPhone) ?? null;
+      : ((await buildPhoneMatchMap()).get(row.waPhone) ?? null);
 
   return {
     id: row.id,
