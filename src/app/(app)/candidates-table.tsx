@@ -8,6 +8,7 @@ import {
   ChevronRight,
   FileText,
   Loader2,
+  MapPin,
   Search,
   Send,
   X,
@@ -85,6 +86,16 @@ export function CandidatesTable({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchInput]);
 
+  const [locationInput, setLocationInput] = useState(filters.location);
+  useEffect(() => {
+    const id = setTimeout(() => {
+      if (locationInput.trim() !== filters.location)
+        navigate({ location: locationInput });
+    }, 300);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locationInput]);
+
   // Age is a free range, so it's two text inputs committed on blur / Enter
   // rather than per-keystroke — one navigation instead of one per digit.
   const [minAge, setMinAge] = useState(filters.minAge ? String(filters.minAge) : "");
@@ -98,6 +109,7 @@ export function CandidatesTable({
     filters.nationality !== "" ||
     filters.qualification !== "" ||
     filters.country !== "" ||
+    filters.location !== "" ||
     filters.grade !== "" ||
     filters.minYears > 0 ||
     filters.gender !== "" ||
@@ -109,6 +121,7 @@ export function CandidatesTable({
 
   const clearFilters = () => {
     setSearchInput("");
+    setLocationInput("");
     setMinAge("");
     setMaxAge("");
     router.push(pathname);
@@ -237,6 +250,16 @@ export function CandidatesTable({
             </option>
           ))}
         </select>
+
+        <div className="relative">
+          <MapPin className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Location (e.g. Saudi, Durban)…"
+            className="pl-9"
+            value={locationInput}
+            onChange={(e) => setLocationInput(e.target.value)}
+          />
+        </div>
 
         <select
           className={selectClass}
