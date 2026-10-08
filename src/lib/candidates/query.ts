@@ -28,6 +28,8 @@ export type CandidateFilters = {
   nationality: string;
   qualification: string;
   country: string;
+  /** Free-text match against Current Location (substring, all tokens). */
+  location: string;
   /** Grade band taught (one of GRADE_BANDS), matched against the multi-select cell. */
   grade: string;
   minYears: number;
@@ -48,6 +50,7 @@ export const EMPTY_FILTERS: CandidateFilters = {
   nationality: "",
   qualification: "",
   country: "",
+  location: "",
   grade: "",
   minYears: 0,
   gender: "",
@@ -75,6 +78,11 @@ function likePattern(q: string): string {
   return "%" + q.toLowerCase().replace(/[\\%_]/g, "\\$&") + "%";
 }
 
+/** Lowercase and turn punctuation/emoji into spaces, matching the SQL fold. */
+function foldLocation(q: string): string {
+  return q.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
 /** Translate the UI filter set into a single SQL predicate (or none). */
 function buildWhere(f: CandidateFilters): SQL | undefined {
   const conds: SQL[] = [];
@@ -99,6 +107,20 @@ function buildWhere(f: CandidateFilters): SQL | undefined {
         COL.countries,
       )}, ',')) as token where btrim(token) = ${f.country})`,
     );
+  }
+  const locationTokens = foldLocation(f.location)
+    .split(" ")
+    .filter(Boolean);
+  if (locationTokens.length) {
+    // Current Location is hand-typed ("Cape Town, South Africa", "KSA"). Fold
+    // punctuation so "saudi" hits "Saudi Arabia" / "Saudi-Arabia"; every query
+    // token must appear (so "south africa" still matches "Durban, South Africa").
+    const folded = sql`regexp_replace(lower(coalesce(${cell(
+      COL.location,
+    )}, '')), '[^a-z0-9]+', ' ', 'g')`;
+    for (const token of locationTokens) {
+      conds.push(sql`${folded} like ${likePattern(token)}`);
+    }
   }
   if (f.grade) {
     // The cell is a "Grade 6 to Grade 8, Grade 9 to Grade 12" multi-select; match
