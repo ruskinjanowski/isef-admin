@@ -13,6 +13,7 @@ import { candidates } from "@/db/schema";
 import {
   dedupeLatestByEmail,
   normalizeRow,
+  relabelJunkTimestampHeader,
   type NormalizedCandidate,
   type RawRow,
 } from "./normalize";
@@ -42,12 +43,14 @@ const UPSERT_BATCH_SIZE = 200;
 export async function importCandidatesFromCsv(
   csvContent: string,
 ): Promise<ImportReport> {
-  const rows = parse(csvContent, {
-    columns: true,
-    skip_empty_lines: true,
-    bom: true,
-    relax_column_count: true,
-  }) as RawRow[];
+  const rows = relabelJunkTimestampHeader(
+    parse(csvContent, {
+      columns: true,
+      skip_empty_lines: true,
+      bom: true,
+      relax_column_count: true,
+    }) as RawRow[],
+  );
 
   const normalized: NormalizedCandidate[] = [];
   let skippedNoEmail = 0;

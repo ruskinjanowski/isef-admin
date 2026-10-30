@@ -43,6 +43,25 @@ export function parseTimestamp(value: string | undefined): number | null {
 }
 
 /**
+ * Some exports replace the Google Forms `Timestamp` header with junk (blank, a
+ * sheet URL, …) while leaving the datetime values in column A. If the first
+ * header isn't already `Timestamp` and the first cell of the first data row
+ * parses as a form timestamp, relabel that column. A correct export is unchanged.
+ */
+export function relabelJunkTimestampHeader(rows: RawRow[]): RawRow[] {
+  const first = rows[0];
+  if (!first) return rows;
+  const junkHeader = Object.keys(first)[0];
+  if (junkHeader === undefined || junkHeader === TIMESTAMP_COLUMN) return rows;
+  if (parseTimestamp(first[junkHeader]) == null) return rows;
+
+  return rows.map((row) => {
+    const { [junkHeader]: timestamp, ...rest } = row;
+    return { [TIMESTAMP_COLUMN]: timestamp, ...rest };
+  });
+}
+
+/**
  * Normalize one raw CSV row. Returns null when the row has no email — there is
  * no stable key to store it under, so the caller records it as skipped.
  */
